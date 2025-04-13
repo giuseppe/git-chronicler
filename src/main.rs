@@ -20,16 +20,18 @@
 use clap::Parser;
 use dirs;
 use reqwest::blocking::Client;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use string_builder::Builder;
 
-const MODEL: &str = "claude-3-7-sonnet-20250219";
+const OPEN_ROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
 const MAX_TOKENS: u32 = 16384;
 
 fn inline_fix_prompt(patch: &String) -> String {
@@ -48,7 +50,7 @@ fn check_fix_prompt(patch: &String) -> String {
 
 fn read_api_key() -> Result<String, Box<dyn Error>> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let key_path = home_dir.join(".anthropic").join("key");
+    let key_path = home_dir.join(".openrouter").join("key");
 
     let mut file = File::open(&key_path)
         .map_err(|e| format!("Failed to open key file at {:?}: {}", key_path, e))?;
@@ -65,28 +67,26 @@ fn read_api_key() -> Result<String, Box<dyn Error>> {
 }
 
 #[derive(Serialize)]
-struct ClaudeRequest {
+struct OpenRouterRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<Message>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Message {
     role: String,
     content: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct ClaudeResponse {
-    content: Vec<Content>,
+#[derive(Deserialize)]
+struct OpenRouterResponse {
+    choices: Vec<Choice>,
 }
 
-#[derive(Deserialize, Debug)]
-struct Content {
-    text: String,
-    #[serde(rename = "type")]
-    content_type: String,
+#[derive(Deserialize)]
+struct Choice {
+    message: Message,
 }
 
 fn get_current_patch() -> Result<String, Box<dyn Error>> {
@@ -140,10 +140,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let api_key = read_api_key()?;
 
+    let bearer_auth = format!("Bearer {}", &api_key);
+
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert("x-api-key", HeaderValue::from_str(&api_key)?);
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
 
     let prompt = if opts.inline {
         inline_fix_prompt(&patch)
@@ -151,7 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         check_fix_prompt(&patch)
     };
 
-    let request_body = ClaudeRequest {
+    let request_body = OpenRouterRequest {
         model: opts.model.unwrap_or_else(|| MODEL.to_string()),
         max_tokens: opts.max_tokens.unwrap_or_else(|| MAX_TOKENS),
         messages: vec![Message {
@@ -162,7 +163,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let client = Client::new();
     let response = client
-        .post("https://api.anthropic.com/v1/messages")
+        .post(OPEN_ROUTER_URL)
+        .timeout(Duration::from_secs(1000))
         .headers(headers)
         .json(&request_body)
         .send()?;
@@ -174,13 +176,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             response.text()?
         );
     } else {
-        let claude_response: ClaudeResponse = response.json()?;
+        let response: OpenRouterResponse = response.json()?;
 
         let mut builder = Builder::default();
-        for content in claude_response.content {
-            if content.content_type == "text" {
-                builder.append(content.text);
-            }
+        for choice in response.choices {
+            builder.append(choice.message.content);
         }
         let msg = builder.string()?;
         if opts.inline {

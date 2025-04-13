@@ -1,17 +1,14 @@
 # GitChronicler
 
-GitChronicler is a tool that uses Claude AI to automatically write or
-check your Git commit messages.
-
-It is nothing more than an experiment to play with the Claude AI API.
+GitChronicler is a tool that uses AI to automatically write or check your Git commit messages.
 
 ### Setup
 
-An Anthropic API key is required.  The Anthropic API key is expected
-   at the `~/anthropic/key` path.
+An OpenRouter API key is required.  The OpenRouter API key is expected
+   at the `~/.openrouter/key` path.
    ```
-   mkdir -p ~/.anthropic
-   echo "your-anthropic-api-key" > ~/.anthropic/key
+   mkdir -p ~/.openrouter
+   echo "your-openrouter-api-key" > ~/.openrouter/key
    ```
 
 ## Usage

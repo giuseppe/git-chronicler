@@ -18,7 +18,7 @@ An OpenRouter API key is required.  The OpenRouter API key is expected
 To analyze the most recent commit and receive suggestions:
 
 ```
-git-chronicler
+git-chronicler check
 ```
 
 ### Automatically improve a commit message
@@ -26,7 +26,7 @@ git-chronicler
 To replace the most recent commit message with an AI-improved version:
 \
 ```
-git-chronicler --inline
+git-chronicler fixup
 ```
 
 ### git rebase -i
@@ -36,10 +36,10 @@ rewrite/improve the git commit message for the current branch, you can
 run:
 
 ```
-git rebase -i $base_branch -x 'git-chronicler [--inline]'
+git rebase -i $base_branch -x 'git-chronicler fixup'
 ```
 
-If `--inline` is specified to `git-chronicler`, then the git commit
+If `fixup` is specified to `git-chronicler`, then the git commit
 message is replaced inline and amended to the git patch.
 
 ## License

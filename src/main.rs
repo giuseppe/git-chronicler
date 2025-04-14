@@ -17,7 +17,7 @@
  *
  */
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dirs;
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -126,11 +126,19 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Opts {
     #[clap(short, long)]
-    inline: bool,
-    #[clap(short, long)]
     max_tokens: Option<u32>,
     #[clap(long)]
     model: Option<String>,
+    #[clap(subcommand)]
+    command: SubCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SubCommand {
+    /// Fixup the current commit message inline
+    Fixup,
+    /// Check if the commit message describes correctly the patch
+    Check,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -146,10 +154,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
 
-    let prompt = if opts.inline {
-        inline_fix_prompt(&patch)
-    } else {
-        check_fix_prompt(&patch)
+    let prompt = match opts.command {
+        SubCommand::Fixup => inline_fix_prompt(&patch),
+        SubCommand::Check => check_fix_prompt(&patch),
     };
 
     let request_body = OpenRouterRequest {
@@ -183,15 +190,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             builder.append(choice.message.content);
         }
         let msg = builder.string()?;
-        if opts.inline {
-            amend_commit(&msg)?;
-        } else {
-            if msg.starts_with("ERROR\n") {
-                eprintln!("{}", &msg["ERROR\n".len()..].trim());
-                return Err("wrong commit message".into());
+
+        match opts.command {
+            SubCommand::Fixup => {
+                amend_commit(&msg)?;
             }
-            println!("{}", &msg);
-        }
+            SubCommand::Check => {
+                if msg.starts_with("ERROR\n") {
+                    eprintln!("{}", &msg["ERROR\n".len()..].trim());
+                    return Err("wrong commit message".into());
+                }
+                println!("{}", &msg);
+            }
+        };
     }
 
     Ok(())

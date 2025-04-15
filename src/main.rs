@@ -34,14 +34,20 @@ const OPEN_ROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
 const MAX_TOKENS: u32 = 16384;
 
-fn inline_fix_prompt(patch: &String) -> String {
+fn inline_prompt(patch: &String) -> String {
     "Improve the git commit message for the following patch and add any missing information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
      Return only the git commit message without any other information nor any delimiter.  \
      Leave unchanged any signed-off line or any other trailer:\n".to_owned() + patch
 }
 
-fn check_fix_prompt(patch: &String) -> String {
+fn write_prompt(patch: &String) -> String {
+    "Write the git commit message for the following patch and add any information you get from the code.  \
+     Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
+     Return only the git commit message without any other information nor any delimiter:\n".to_owned() + patch
+}
+
+fn check_prompt(patch: &String) -> String {
     "Report any mistake you see in the commit log message.  \
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
      Ignore the date and the author information, look only at the commit message.  \
@@ -89,7 +95,7 @@ struct Choice {
     message: Message,
 }
 
-fn get_current_patch() -> Result<String, Box<dyn Error>> {
+fn get_last_commit() -> Result<String, Box<dyn Error>> {
     let mut input = Command::new("git");
     input.arg("log").arg("-p").arg("-1");
     let output = input.output()?;
@@ -100,6 +106,47 @@ fn get_current_patch() -> Result<String, Box<dyn Error>> {
     }
     let r = String::from_utf8(output.stdout)?;
     Ok(r)
+}
+
+fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
+    let mut git_cmd = Command::new("git");
+
+    let mut input = git_cmd.arg("diff");
+    if cached {
+        input = input.arg("--cached");
+    }
+
+    let output = input.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr)?;
+        let err: Box<dyn Error> = stderr.into();
+        return Err(err);
+    }
+    let r = String::from_utf8(output.stdout)?;
+    Ok(r)
+}
+
+fn write_commit(commit_msg: &String, signoff: bool, cached: bool) -> Result<(), Box<dyn Error>> {
+    let mut git_cmd = Command::new("git");
+    let mut cmd = git_cmd.args(["commit", "-F", "-"]);
+    if !cached {
+        cmd = cmd.arg("-a");
+    }
+    if signoff {
+        cmd = cmd.arg("-s");
+    }
+    let mut child = cmd.stdin(Stdio::piped()).spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(commit_msg.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr)?;
+        let err: Box<dyn Error> = stderr.into();
+        return Err(err);
+    }
+    return Ok(());
 }
 
 fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
@@ -125,9 +172,11 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
 #[derive(Parser, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Opts {
+    /// Maximum number of tokens to generate
     #[clap(short, long)]
     max_tokens: Option<u32>,
     #[clap(long)]
+    /// Override the model to use
     model: Option<String>,
     #[clap(subcommand)]
     command: SubCommand,
@@ -135,6 +184,16 @@ struct Opts {
 
 #[derive(Debug, Subcommand)]
 enum SubCommand {
+    /// Write a commit message
+    Write {
+        /// Add a Signed-off-by trailer by the committer at the end of the commit log message
+        #[clap(short, long)]
+        signoff: bool,
+
+        /// Commit only the staged changes
+        #[clap(long)]
+        cached: bool,
+    },
     /// Fixup the current commit message inline
     Fixup,
     /// Check if the commit message describes correctly the patch
@@ -143,8 +202,6 @@ enum SubCommand {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opts::parse();
-
-    let patch = get_current_patch()?;
 
     let api_key = read_api_key()?;
 
@@ -155,8 +212,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
 
     let prompt = match opts.command {
-        SubCommand::Fixup => inline_fix_prompt(&patch),
-        SubCommand::Check => check_fix_prompt(&patch),
+        SubCommand::Fixup => {
+            let patch = get_last_commit()?;
+            inline_prompt(&patch)
+        }
+        SubCommand::Check => {
+            let patch = get_last_commit()?;
+            check_prompt(&patch)
+        }
+        SubCommand::Write { signoff: _, cached } => {
+            let patch = get_diff(cached)?;
+            write_prompt(&patch)
+        }
     };
 
     let request_body = OpenRouterRequest {
@@ -201,6 +268,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     return Err("wrong commit message".into());
                 }
                 println!("{}", &msg);
+            }
+            SubCommand::Write { signoff, cached } => {
+                write_commit(&msg, signoff, cached)?;
             }
         };
     }

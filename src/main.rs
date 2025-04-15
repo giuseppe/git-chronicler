@@ -169,6 +169,15 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
     return Ok(());
 }
 
+fn check_commit(msg: &String) -> Result<(), Box<dyn Error>> {
+    if msg.starts_with("ERROR\n") {
+        eprintln!("{}", &msg["ERROR\n".len()..].trim());
+        return Err("wrong commit message".into());
+    }
+    println!("{}", &msg);
+    Ok(())
+}
+
 #[derive(Parser, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Opts {
@@ -263,11 +272,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 amend_commit(&msg)?;
             }
             SubCommand::Check => {
-                if msg.starts_with("ERROR\n") {
-                    eprintln!("{}", &msg["ERROR\n".len()..].trim());
-                    return Err("wrong commit message".into());
-                }
-                println!("{}", &msg);
+                check_commit(&msg)?;
             }
             SubCommand::Write { signoff, cached } => {
                 write_commit(&msg, signoff, cached)?;

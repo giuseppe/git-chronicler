@@ -34,6 +34,7 @@ const OPEN_ROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
 const MAX_TOKENS: u32 = 16384;
 
+/// Creates a prompt for the AI model to improve an existing commit message.
 fn inline_prompt(patch: &String) -> String {
     "Improve the git commit message for the following patch and add any missing information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
@@ -41,12 +42,14 @@ fn inline_prompt(patch: &String) -> String {
      Leave unchanged any signed-off line or any other trailer:\n".to_owned() + patch
 }
 
+/// Creates a prompt for the AI model to write a new commit message.
 fn write_prompt(patch: &String) -> String {
     "Write the git commit message for the following patch and add any information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
      Return only the git commit message without any other information nor any delimiter:\n".to_owned() + patch
 }
 
+/// Creates a prompt for the AI model to check an existing commit message for errors.
 fn check_prompt(patch: &String) -> String {
     "Report any mistake you see in the commit log message.  \
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
@@ -54,6 +57,7 @@ fn check_prompt(patch: &String) -> String {
      Explain carefully what changes you suggest:\n".to_owned() + patch
 }
 
+/// Reads the OpenRouter API key from the user's home directory.
 fn read_api_key() -> Result<String, Box<dyn Error>> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let key_path = home_dir.join(".openrouter").join("key");
@@ -95,6 +99,7 @@ struct Choice {
     message: Message,
 }
 
+/// Retrieves the last commit log message and patch using `git log -p -1`.
 fn get_last_commit() -> Result<String, Box<dyn Error>> {
     let mut input = Command::new("git");
     input.arg("log").arg("-p").arg("-1");
@@ -108,6 +113,7 @@ fn get_last_commit() -> Result<String, Box<dyn Error>> {
     Ok(r)
 }
 
+/// Retrieves the diff of changes using `git diff`.
 fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
     let mut git_cmd = Command::new("git");
 
@@ -126,6 +132,7 @@ fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
     Ok(r)
 }
 
+/// Creates a new commit using the provided commit message.
 fn write_commit(commit_msg: &String, signoff: bool, cached: bool) -> Result<(), Box<dyn Error>> {
     let mut git_cmd = Command::new("git");
     let mut cmd = git_cmd.args(["commit", "-F", "-"]);
@@ -149,6 +156,7 @@ fn write_commit(commit_msg: &String, signoff: bool, cached: bool) -> Result<(), 
     return Ok(());
 }
 
+/// Amends the last commit with the provided commit message.
 fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
     let mut child = Command::new("git")
         .args(["commit", "--amend", "-F", "-"])
@@ -169,6 +177,7 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
     return Ok(());
 }
 
+/// Checks the AI's response for the 'check' command.
 fn check_commit(msg: &String) -> Result<(), Box<dyn Error>> {
     if msg.starts_with("ERROR\n") {
         eprintln!("{}", &msg["ERROR\n".len()..].trim());
@@ -209,6 +218,7 @@ enum SubCommand {
     Check,
 }
 
+/// Main entry point for the git-chronicler application.
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opts::parse();
 

@@ -35,26 +35,26 @@ const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
 const MAX_TOKENS: u32 = 16384;
 
 /// Creates a prompt for the AI model to improve an existing commit message.
-fn inline_prompt(patch: &String) -> String {
-    "Improve the git commit message for the following patch and add any missing information you get from the code.  \
+fn inline_prompt() -> String {
+    "Improve the git commit message for the patch and add any missing information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
      Return only the git commit message without any other information nor any delimiter.  \
-     Leave unchanged any signed-off line or any other trailer:\n".to_owned() + patch
+     Leave unchanged any signed-off line or any other trailer:\n".to_owned()
 }
 
 /// Creates a prompt for the AI model to write a new commit message.
-fn write_prompt(patch: &String) -> String {
-    "Write the git commit message for the following patch and add any information you get from the code.  \
+fn write_prompt() -> String {
+    "Write the git commit message for the patch and add any information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
-     Return only the git commit message without any other information nor any delimiter:\n".to_owned() + patch
+     Return only the git commit message without any other information nor any delimiter:\n".to_owned()
 }
 
 /// Creates a prompt for the AI model to check an existing commit message for errors.
-fn check_prompt(patch: &String) -> String {
+fn check_prompt() -> String {
     "Report any mistake you see in the commit log message.  \
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
      Ignore the date and the author information, look only at the commit message.  \
-     Explain carefully what changes you suggest:\n".to_owned() + patch
+     Explain carefully what changes you suggest:\n".to_owned()
 }
 
 /// Reads the OpenRouter API key from the user's home directory.
@@ -230,28 +230,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
 
-    let prompt = match opts.command {
-        SubCommand::Fixup => {
-            let patch = get_last_commit()?;
-            inline_prompt(&patch)
-        }
-        SubCommand::Check => {
-            let patch = get_last_commit()?;
-            check_prompt(&patch)
-        }
-        SubCommand::Write { signoff: _, cached } => {
-            let patch = get_diff(cached)?;
-            write_prompt(&patch)
-        }
+    let (prompt, patch) = match opts.command {
+        SubCommand::Fixup => (inline_prompt(), get_last_commit()?),
+        SubCommand::Check => (check_prompt(), get_last_commit()?),
+        SubCommand::Write { signoff: _, cached } => (write_prompt(), get_diff(cached)?),
     };
 
     let request_body = OpenRouterRequest {
         model: opts.model.unwrap_or_else(|| MODEL.to_string()),
         max_tokens: opts.max_tokens.unwrap_or_else(|| MAX_TOKENS),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: prompt.to_string(),
-        }],
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: patch.to_string(),
+            },
+            Message {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            },
+        ],
     };
 
     let client = Client::new();

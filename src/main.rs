@@ -30,7 +30,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use string_builder::Builder;
 
-const OPEN_ROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
 const MAX_TOKENS: u32 = 16384;
 
@@ -77,7 +77,7 @@ fn read_api_key() -> Result<String, Box<dyn Error>> {
 }
 
 #[derive(Serialize)]
-struct OpenRouterRequest {
+struct OpenAIRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<Message>,
@@ -90,7 +90,7 @@ struct Message {
 }
 
 #[derive(Deserialize)]
-struct OpenRouterResponse {
+struct OpenAIResponse {
     choices: Vec<Choice>,
 }
 
@@ -196,6 +196,9 @@ struct Opts {
     #[clap(long)]
     /// Override the model to use
     model: Option<String>,
+    #[clap(long, default_value = DEFAULT_OPENAI_URL)]
+    /// Override the endpoint URL to use
+    endpoint: String,
     #[clap(subcommand)]
     command: SubCommand,
 }
@@ -236,7 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         SubCommand::Write { signoff: _, cached } => (write_prompt(), get_diff(cached)?),
     };
 
-    let request_body = OpenRouterRequest {
+    let request_body = OpenAIRequest {
         model: opts.model.unwrap_or_else(|| MODEL.to_string()),
         max_tokens: opts.max_tokens.unwrap_or_else(|| MAX_TOKENS),
         messages: vec![
@@ -253,7 +256,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let client = Client::new();
     let response = client
-        .post(OPEN_ROUTER_URL)
+        .post(&opts.endpoint)
         .timeout(Duration::from_secs(1000))
         .headers(headers)
         .json(&request_body)
@@ -266,7 +269,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             response.text()?
         );
     } else {
-        let response: OpenRouterResponse = response.json()?;
+        let response: OpenAIResponse = response.json()?;
 
         let mut builder = Builder::default();
         for choice in response.choices {

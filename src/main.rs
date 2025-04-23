@@ -117,7 +117,7 @@ fn get_last_commit() -> Result<String, Box<dyn Error>> {
 fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
     let mut git_cmd = Command::new("git");
 
-    let mut input = git_cmd.arg("diff");
+    let mut input = git_cmd.arg("diff").arg("-U50");
     if cached {
         input = input.arg("--cached");
     }

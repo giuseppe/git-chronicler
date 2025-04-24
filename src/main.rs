@@ -17,14 +17,12 @@
  *
  */
 
-use serde::Deserialize;
 use clap::{Parser, Subcommand};
-use codehawk::openai::{Opts, ToolsCollection, ToolCallback, ToolItem, post_request};
+use codehawk::openai::{Opts, ToolCallback, ToolItem, ToolsCollection, post_request};
+use serde::Deserialize;
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use string_builder::Builder;
-use tempfile;
 
 const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
@@ -76,7 +74,7 @@ fn tool_read_file(params_str: &String) -> Result<String, Box<dyn Error>> {
         path: String,
     }
 
-    let params: Params = serde_json::from_str::<Params>(&params_str)?;
+    let params: Params = serde_json::from_str::<Params>(params_str)?;
 
     let mut cmd = Command::new("git");
     cmd.arg("show").arg(format!("HEAD:{}", params.path));
@@ -92,10 +90,7 @@ fn tool_read_file(params_str: &String) -> Result<String, Box<dyn Error>> {
 }
 
 fn append_tool(tools: &mut ToolsCollection, name: String, callback: ToolCallback, schema: String) {
-    let item = ToolItem {
-        callback: callback,
-        schema: schema,
-    };
+    let item = ToolItem { callback, schema };
     tools.insert(name, item);
 }
 
@@ -193,7 +188,7 @@ fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
 
 /// Creates a new commit using the provided commit message.
 fn write_commit(
-    commit_msg: &String,
+    commit_msg: &str,
     signoff: bool,
     cached: bool,
     interactive: bool,
@@ -239,7 +234,7 @@ fn write_commit(
 }
 
 /// Amends the last commit with the provided commit message.
-fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
+fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
     let mut child = Command::new("git")
         .args(["commit", "--amend", "-F", "-"])
         .stdin(Stdio::piped())
@@ -256,13 +251,13 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
-    return Ok(());
+    Ok(())
 }
 
 /// Checks the AI's response for the 'check' command.
-fn check_commit(msg: &String) -> Result<(), Box<dyn Error>> {
-    if msg.starts_with("ERROR\n") {
-        eprintln!("{}", &msg["ERROR\n".len()..].trim());
+fn check_commit(msg: &str) -> Result<(), Box<dyn Error>> {
+    if let Some(msg) = msg.strip_prefix("ERROR\n") {
+        eprintln!("{}", msg.trim());
         return Err("wrong commit message".into());
     }
     println!("{}", &msg);
@@ -328,20 +323,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tools = initialize_tools();
 
     let query_opts = Opts {
-        max_tokens: Some(opts.max_tokens.unwrap_or_else(|| MAX_TOKENS)),
+        max_tokens: Some(opts.max_tokens.unwrap_or(MAX_TOKENS)),
         model: opts.model.unwrap_or_else(|| MODEL.to_string()),
         endpoint: opts.endpoint.clone(),
     };
 
     let response = post_request(&prompt, Some(system_prompts), None, &tools, &query_opts)?;
 
-    let mut builder = Builder::default();
-    if let Some(choices) = response.choices {
-        for choice in choices {
-            builder.append(choice.message.content);
-        }
-    }
-    let msg = builder.string()?;
+    let msg: String = response
+        .choices
+        .ok_or("No responses received")?
+        .into_iter()
+        .map(|choice| choice.message.content)
+        .collect();
 
     match opts.command {
         SubCommand::Fixup => {

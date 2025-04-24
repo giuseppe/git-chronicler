@@ -29,6 +29,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use string_builder::Builder;
+use tempfile;
 
 const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
@@ -133,27 +134,50 @@ fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
 }
 
 /// Creates a new commit using the provided commit message.
-fn write_commit(commit_msg: &String, signoff: bool, cached: bool) -> Result<(), Box<dyn Error>> {
+fn write_commit(
+    commit_msg: &String,
+    signoff: bool,
+    cached: bool,
+    interactive: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut git_cmd = Command::new("git");
-    let mut cmd = git_cmd.args(["commit", "-F", "-"]);
+    let mut cmd = git_cmd.arg("commit");
     if !cached {
         cmd = cmd.arg("-a");
     }
     if signoff {
         cmd = cmd.arg("-s");
     }
-    let mut child = cmd.stdin(Stdio::piped()).spawn()?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(commit_msg.as_bytes())?;
-    }
 
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8(output.stderr)?;
-        let err: Box<dyn Error> = stderr.into();
-        return Err(err);
+    if interactive {
+        let tempfile = tempfile::NamedTempFile::new()?;
+        let path = tempfile.path().to_str().ok_or("invalid temp file name")?;
+
+        std::fs::write(tempfile.path(), commit_msg.as_bytes())?;
+
+        cmd = cmd.args(["-F", path, "--edit"]);
+
+        let mut child = cmd.spawn()?;
+        child.wait()?;
+
+        Ok(())
+    } else {
+        // Read from stdin if it is not running in interactive mode
+        cmd = cmd.args(["-F", "-"]);
+
+        let mut child = cmd.stdin(Stdio::piped()).spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(commit_msg.as_bytes())?;
+        }
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8(output.stderr)?;
+            let err: Box<dyn Error> = stderr.into();
+            return Err(err);
+        }
+
+        Ok(())
     }
-    return Ok(());
 }
 
 /// Amends the last commit with the provided commit message.
@@ -214,6 +238,10 @@ enum SubCommand {
         /// Commit only the staged changes
         #[clap(long)]
         cached: bool,
+
+        /// Modify the message before commit
+        #[clap(short, long)]
+        interactive: bool,
     },
     /// Fixup the current commit message inline
     Fixup,
@@ -237,7 +265,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (prompt, patch) = match opts.command {
         SubCommand::Fixup => (inline_prompt(), get_last_commit()?),
         SubCommand::Check => (check_prompt(), get_last_commit()?),
-        SubCommand::Write { signoff: _, cached } => (write_prompt(), get_diff(cached)?),
+        SubCommand::Write {
+            signoff: _,
+            cached,
+            interactive: _,
+        } => (write_prompt(), get_diff(cached)?),
     };
 
     let request_body = OpenAIRequest {
@@ -285,8 +317,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             SubCommand::Check => {
                 check_commit(&msg)?;
             }
-            SubCommand::Write { signoff, cached } => {
-                write_commit(&msg, signoff, cached)?;
+            SubCommand::Write {
+                signoff,
+                cached,
+                interactive,
+            } => {
+                write_commit(&msg, signoff, cached, interactive)?;
             }
         };
     }

@@ -18,11 +18,13 @@ An OpenRouter API key is required.  The OpenRouter API key is expected
 To write the commit message for the current diff, you can use:
 
 ```
-git-chronicler write [-s] [--cached]
+git-chronicler write [-s] [--cached] [-i]
 ```
 
 The `-s` flag will pass `-s` to the underlying `git commit` message,
 while `--cached` will limit the commit to the staged files.
+
+If `-i` is provided, then allow to customize the log message before commit.
 
 ### Check a commit message
 

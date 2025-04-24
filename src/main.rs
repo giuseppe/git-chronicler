@@ -23,7 +23,6 @@ use serde::Deserialize;
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use string_builder::Builder;
 
 const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
@@ -331,13 +330,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let response = post_request(&prompt, Some(system_prompts), None, &tools, &query_opts)?;
 
-    let mut builder = Builder::default();
-    if let Some(choices) = response.choices {
-        for choice in choices {
-            builder.append(choice.message.content);
-        }
-    }
-    let msg = builder.string()?;
+    let msg = response
+        .choices
+        .ok_or("No responses received")?
+        .into_iter()
+        .map(|choice| choice.message.content)
+        .collect();
 
     match opts.command {
         SubCommand::Fixup => {

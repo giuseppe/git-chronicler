@@ -17,8 +17,9 @@
  *
  */
 
+use serde::Deserialize;
 use clap::{Parser, Subcommand};
-use codehawk::openai::{Opts, ToolsCollection, post_request};
+use codehawk::openai::{Opts, ToolsCollection, ToolCallback, ToolItem, post_request};
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -50,6 +51,111 @@ fn check_prompt() -> String {
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
      Ignore the date and the author information, look only at the commit message.  \
      Explain carefully what changes you suggest:\n".to_owned()
+}
+
+/// entrypoint for the list_all_files tool
+/// This code is copied from codehawk for now
+fn tool_list_all_files(_params_str: &String) -> Result<String, Box<dyn Error>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("ls-files");
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr)?;
+        let err: Box<dyn Error> = stderr.into();
+        return Err(err);
+    }
+    let r = String::from_utf8(output.stdout)?;
+    Ok(r)
+}
+
+/// entrypoint for the read_file tool
+/// This code is copied from codehawk for now
+fn tool_read_file(params_str: &String) -> Result<String, Box<dyn Error>> {
+    #[derive(Deserialize)]
+    struct Params {
+        path: String,
+    }
+
+    let params: Params = serde_json::from_str::<Params>(&params_str)?;
+
+    let mut cmd = Command::new("git");
+    cmd.arg("show").arg(format!("HEAD:{}", params.path));
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr)?;
+        let err: Box<dyn Error> = stderr.into();
+        return Err(err);
+    }
+    let r = String::from_utf8(output.stdout)?;
+    Ok(r)
+}
+
+fn append_tool(tools: &mut ToolsCollection, name: String, callback: ToolCallback, schema: String) {
+    let item = ToolItem {
+        callback: callback,
+        schema: schema,
+    };
+    tools.insert(name, item);
+}
+
+fn initialize_tools() -> ToolsCollection {
+    let mut tools: ToolsCollection = ToolsCollection::new();
+
+    append_tool(
+        &mut tools,
+        "read_file".to_string(),
+        tool_read_file,
+        r#"
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Get the content of a file stored in the repository.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "path of the file under the repository, e.g. src/main.rs"
+                        }
+                    },
+                    "required": [
+                        "path"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        }
+"#
+        .to_string(),
+    );
+
+    append_tool(
+        &mut tools,
+        "list_all_files".to_string(),
+        tool_list_all_files,
+        r#"
+        {
+            "type": "function",
+            "function": {
+                "name": "list_all_files",
+                "description": "Get the list of all the files in the repository.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                    },
+                    "required": [
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        }
+"#
+        .to_string(),
+    );
+
+    tools
 }
 
 /// Retrieves the last commit log message and patch using `git log -p -1`.
@@ -219,7 +325,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let system_prompts: Vec<String> = vec![patch.to_string()];
 
-    let tools: ToolsCollection = ToolsCollection::new();
+    let tools = initialize_tools();
 
     let query_opts = Opts {
         max_tokens: Some(opts.max_tokens.unwrap_or_else(|| MAX_TOKENS)),

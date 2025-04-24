@@ -188,7 +188,7 @@ fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
 
 /// Creates a new commit using the provided commit message.
 fn write_commit(
-    commit_msg: &String,
+    commit_msg: &str,
     signoff: bool,
     cached: bool,
     interactive: bool,
@@ -234,7 +234,7 @@ fn write_commit(
 }
 
 /// Amends the last commit with the provided commit message.
-fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
+fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
     let mut child = Command::new("git")
         .args(["commit", "--amend", "-F", "-"])
         .stdin(Stdio::piped())
@@ -255,7 +255,7 @@ fn amend_commit(commit_msg: &String) -> Result<(), Box<dyn Error>> {
 }
 
 /// Checks the AI's response for the 'check' command.
-fn check_commit(msg: &String) -> Result<(), Box<dyn Error>> {
+fn check_commit(msg: &str) -> Result<(), Box<dyn Error>> {
     if let Some(msg) = msg.strip_prefix("ERROR\n") {
         eprintln!("{}", msg.trim());
         return Err("wrong commit message".into());
@@ -330,7 +330,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let response = post_request(&prompt, Some(system_prompts), None, &tools, &query_opts)?;
 
-    let msg = response
+    let msg: String = response
         .choices
         .ok_or("No responses received")?
         .into_iter()

@@ -23,8 +23,6 @@ use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
-use std::io::Read;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -63,11 +61,7 @@ fn read_api_key() -> Result<String, Box<dyn Error>> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let key_path = home_dir.join(".openrouter").join("key");
 
-    let mut file = File::open(&key_path)
-        .map_err(|e| format!("Failed to open key file at {:?}: {}", key_path, e))?;
-
-    let mut api_key = String::new();
-    file.read_to_string(&mut api_key)?;
+    let api_key = std::fs::read_to_string(key_path)?;
 
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {

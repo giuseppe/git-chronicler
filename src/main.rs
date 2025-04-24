@@ -225,13 +225,14 @@ enum SubCommand {
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opts::parse();
 
-    let api_key = read_api_key()?;
-
-    let bearer_auth = format!("Bearer {}", &api_key);
-
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
+
+    if opts.endpoint == DEFAULT_OPENAI_URL {
+        let api_key = read_api_key()?;
+        let bearer_auth = format!("Bearer {}", &api_key);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
+    }
 
     let (prompt, patch) = match opts.command {
         SubCommand::Fixup => (inline_prompt(), get_last_commit()?),

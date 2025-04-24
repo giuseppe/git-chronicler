@@ -18,14 +18,10 @@
  */
 
 use clap::{Parser, Subcommand};
-use dirs;
-use reqwest::blocking::Client;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use serde::{Deserialize, Serialize};
+use codehawk::openai::{Opts, ToolsCollection, post_request};
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 use string_builder::Builder;
 use tempfile;
 
@@ -54,44 +50,6 @@ fn check_prompt() -> String {
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
      Ignore the date and the author information, look only at the commit message.  \
      Explain carefully what changes you suggest:\n".to_owned()
-}
-
-/// Reads the OpenRouter API key from the user's home directory.
-fn read_api_key() -> Result<String, Box<dyn Error>> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let key_path = home_dir.join(".openrouter").join("key");
-
-    let api_key = std::fs::read_to_string(key_path)?;
-
-    let api_key = api_key.trim().to_string();
-    if api_key.is_empty() {
-        return Err("API key file is empty".into());
-    }
-
-    Ok(api_key)
-}
-
-#[derive(Serialize)]
-struct OpenAIRequest {
-    model: String,
-    max_tokens: u32,
-    messages: Vec<Message>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct OpenAIResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: Message,
 }
 
 /// Retrieves the last commit log message and patch using `git log -p -1`.
@@ -207,7 +165,7 @@ fn check_commit(msg: &String) -> Result<(), Box<dyn Error>> {
 
 #[derive(Parser, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
-struct Opts {
+struct CliOpts {
     /// Maximum number of tokens to generate
     #[clap(short, long)]
     max_tokens: Option<u32>,
@@ -245,16 +203,7 @@ enum SubCommand {
 
 /// Main entry point for the git-chronicler application.
 fn main() -> Result<(), Box<dyn Error>> {
-    let opts = Opts::parse();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-    if opts.endpoint == DEFAULT_OPENAI_URL {
-        let api_key = read_api_key()?;
-        let bearer_auth = format!("Bearer {}", &api_key);
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer_auth)?);
-    }
+    let opts = CliOpts::parse();
 
     let (prompt, patch) = match opts.command {
         SubCommand::Fixup => (inline_prompt(), get_last_commit()?),
@@ -266,60 +215,43 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => (write_prompt(), get_diff(cached)?),
     };
 
-    let request_body = OpenAIRequest {
+    let prompt = prompt.to_string();
+
+    let system_prompts: Vec<String> = vec![patch.to_string()];
+
+    let tools: ToolsCollection = ToolsCollection::new();
+
+    let query_opts = Opts {
+        max_tokens: Some(opts.max_tokens.unwrap_or_else(|| MAX_TOKENS)),
         model: opts.model.unwrap_or_else(|| MODEL.to_string()),
-        max_tokens: opts.max_tokens.unwrap_or_else(|| MAX_TOKENS),
-        messages: vec![
-            Message {
-                role: "system".to_string(),
-                content: patch.to_string(),
-            },
-            Message {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            },
-        ],
+        endpoint: opts.endpoint.clone(),
     };
 
-    let client = Client::new();
-    let response = client
-        .post(&opts.endpoint)
-        .timeout(Duration::from_secs(1000))
-        .headers(headers)
-        .json(&request_body)
-        .send()?;
+    let response = post_request(&prompt, Some(system_prompts), None, &tools, &query_opts)?;
 
-    if !response.status().is_success() {
-        eprintln!(
-            "Got Error Code: {}: {}",
-            response.status(),
-            response.text()?
-        );
-    } else {
-        let response: OpenAIResponse = response.json()?;
-
-        let mut builder = Builder::default();
-        for choice in response.choices {
+    let mut builder = Builder::default();
+    if let Some(choices) = response.choices {
+        for choice in choices {
             builder.append(choice.message.content);
         }
-        let msg = builder.string()?;
-
-        match opts.command {
-            SubCommand::Fixup => {
-                amend_commit(&msg)?;
-            }
-            SubCommand::Check => {
-                check_commit(&msg)?;
-            }
-            SubCommand::Write {
-                signoff,
-                cached,
-                interactive,
-            } => {
-                write_commit(&msg, signoff, cached, interactive)?;
-            }
-        };
     }
+    let msg = builder.string()?;
+
+    match opts.command {
+        SubCommand::Fixup => {
+            amend_commit(&msg)?;
+        }
+        SubCommand::Check => {
+            check_commit(&msg)?;
+        }
+        SubCommand::Write {
+            signoff,
+            cached,
+            interactive,
+        } => {
+            write_commit(&msg, signoff, cached, interactive)?;
+        }
+    };
 
     Ok(())
 }

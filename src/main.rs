@@ -23,6 +23,8 @@ use serde::Deserialize;
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use env_logger::Env;
+use log::debug;
 
 const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
@@ -304,7 +306,16 @@ enum SubCommand {
 
 /// Main entry point for the git-chronicler application.
 fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize environment logger with custom configuration
+    let env = Env::new()
+        .filter_or("RUST_LOG", "warning")
+        .write_style_or("LOG_STYLE", "always");
+
+    env_logger::init_from_env(env);
+
     let opts = CliOpts::parse();
+
+    debug!("Command line options parsed");
 
     let (prompt, patch) = match opts.command {
         SubCommand::Fixup => (inline_prompt(), get_last_commit()?),

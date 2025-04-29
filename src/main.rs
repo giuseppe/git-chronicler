@@ -19,12 +19,12 @@
 
 use clap::{Parser, Subcommand};
 use codehawk::openai::{Opts, ToolCallback, ToolItem, ToolsCollection, post_request};
+use env_logger::Env;
+use log::{debug, error, info, trace, warn};
 use serde::Deserialize;
 use std::error::Error;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use env_logger::Env;
-use log::debug;
 
 const DEFAULT_OPENAI_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL: &str = "google/gemini-2.5-pro-preview-03-25";
@@ -32,6 +32,7 @@ const MAX_TOKENS: u32 = 16384;
 
 /// Creates a prompt for the AI model to improve an existing commit message.
 fn inline_prompt() -> String {
+    debug!("Creating inline prompt for commit message improvement");
     "Improve the git commit message for the patch and add any missing information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
      Return only the git commit message without any other information nor any delimiter.  \
@@ -40,6 +41,7 @@ fn inline_prompt() -> String {
 
 /// Creates a prompt for the AI model to write a new commit message.
 fn write_prompt() -> String {
+    debug!("Creating write prompt for new commit message");
     "Write the git commit message for the patch and add any information you get from the code.  \
      Explain why a change is done, not what was changed.  Keep the first line below 52 columns and next ones under 80 columns.  \
      Return only the git commit message without any other information nor any delimiter:\n".to_owned()
@@ -47,6 +49,7 @@ fn write_prompt() -> String {
 
 /// Creates a prompt for the AI model to check an existing commit message for errors.
 fn check_prompt() -> String {
+    debug!("Creating check prompt for commit message validation");
     "Report any mistake you see in the commit log message.  \
      If the input contains a significant error or discrepancy, the first line of the returned message must only contain the string ERROR and nothing more.  \
      Ignore the date and the author information, look only at the commit message.  \
@@ -56,15 +59,20 @@ fn check_prompt() -> String {
 /// entrypoint for the list_all_files tool
 /// This code is copied from codehawk for now
 fn tool_list_all_files(_params_str: &String) -> Result<String, Box<dyn Error>> {
+    debug!("Executing list_all_files tool");
     let mut cmd = Command::new("git");
     cmd.arg("ls-files");
+    trace!("Running git command: {:?}", cmd);
+
     let output = cmd.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
+        error!("Failed to list files: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
     let r = String::from_utf8(output.stdout)?;
+    debug!("Successfully listed {} files", r.lines().count());
     Ok(r)
 }
 
@@ -76,27 +84,39 @@ fn tool_read_file(params_str: &String) -> Result<String, Box<dyn Error>> {
         path: String,
     }
 
-    let params: Params = serde_json::from_str::<Params>(params_str)?;
+    let params: Params = match serde_json::from_str::<Params>(params_str) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to parse parameters for read_file: {}", e);
+            return Err(Box::new(e));
+        }
+    };
 
+    debug!("Reading file: {}", params.path);
     let mut cmd = Command::new("git");
     cmd.arg("show").arg(format!("HEAD:{}", params.path));
+    trace!("Running git command: {:?}", cmd);
 
     let output = cmd.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
+        error!("Failed to read file {}: {}", params.path, stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
     let r = String::from_utf8(output.stdout)?;
+    debug!("Successfully read file {} ({} bytes)", params.path, r.len());
     Ok(r)
 }
 
 fn append_tool(tools: &mut ToolsCollection, name: String, callback: ToolCallback, schema: String) {
+    debug!("Adding tool: {}", name);
     let item = ToolItem { callback, schema };
     tools.insert(name, item);
 }
 
 fn initialize_tools() -> ToolsCollection {
+    debug!("Initializing tools for AI request");
     let mut tools: ToolsCollection = ToolsCollection::new();
 
     append_tool(
@@ -152,39 +172,57 @@ fn initialize_tools() -> ToolsCollection {
         .to_string(),
     );
 
+    debug!("Tools initialization completed with {} tools", tools.len());
     tools
 }
 
 /// Retrieves the last commit log message and patch using `git log -p -1`.
 fn get_last_commit() -> Result<String, Box<dyn Error>> {
+    debug!("Retrieving last commit information");
     let mut input = Command::new("git");
     input.arg("log").arg("-p").arg("-1");
+    trace!("Running git command: {:?}", input);
+
     let output = input.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
+        error!("Failed to get last commit: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
     let r = String::from_utf8(output.stdout)?;
+    debug!("Successfully retrieved last commit ({} bytes)", r.len());
     Ok(r)
 }
 
 /// Retrieves the diff of changes using `git diff`.
 fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
+    debug!("Retrieving diff with cached={}", cached);
     let mut git_cmd = Command::new("git");
 
     let mut input = git_cmd.arg("diff").arg("-U50");
     if cached {
         input = input.arg("--cached");
+        debug!("Using staged changes only");
+    } else {
+        debug!("Using all changes (staged and unstaged)");
     }
 
+    trace!("Running git command: {:?}", input);
     let output = input.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
+        error!("Failed to get diff: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
     let r = String::from_utf8(output.stdout)?;
+    debug!("Successfully retrieved diff ({} bytes)", r.len());
+
+    if r.is_empty() {
+        warn!("Empty diff returned - no changes detected");
+    }
+
     Ok(r)
 }
 
@@ -195,73 +233,115 @@ fn write_commit(
     cached: bool,
     interactive: bool,
 ) -> Result<(), Box<dyn Error>> {
+    info!(
+        "Creating new commit with signoff={}, cached={}, interactive={}",
+        signoff, cached, interactive
+    );
+
     let mut git_cmd = Command::new("git");
     let mut cmd = git_cmd.arg("commit");
     if !cached {
         cmd = cmd.arg("-a");
+        debug!("Using -a flag to commit all changes");
     }
     if signoff {
         cmd = cmd.arg("-s");
+        debug!("Adding signoff to commit");
     }
 
     if interactive {
+        debug!("Interactive mode enabled, preparing temporary file");
         let tempfile = tempfile::NamedTempFile::new()?;
         let path = tempfile.path().to_str().ok_or("invalid temp file name")?;
 
+        trace!("Writing commit message to temporary file: {}", path);
         std::fs::write(tempfile.path(), commit_msg.as_bytes())?;
 
         cmd = cmd.args(["-F", path, "--edit"]);
+        debug!("Launching editor for commit message");
 
+        trace!("Running git command: {:?}", cmd);
         let mut child = cmd.spawn()?;
-        child.wait()?;
+        let status = child.wait()?;
 
+        if !status.success() {
+            error!("Commit failed with status: {}", status);
+            return Err("Commit command failed".into());
+        }
+
+        info!("Commit created successfully");
         Ok(())
     } else {
         // Read from stdin if it is not running in interactive mode
+        debug!("Non-interactive mode, using stdin for commit message");
         cmd = cmd.args(["-F", "-"]);
 
+        trace!("Running git command: {:?}", cmd);
         let mut child = cmd.stdin(Stdio::piped()).spawn()?;
         if let Some(stdin) = child.stdin.as_mut() {
+            trace!(
+                "Writing commit message to stdin ({} bytes)",
+                commit_msg.len()
+            );
             stdin.write_all(commit_msg.as_bytes())?;
+        } else {
+            error!("Failed to open stdin for git commit");
+            return Err("Failed to open stdin for git commit".into());
         }
+
         let output = child.wait_with_output()?;
         if !output.status.success() {
             let stderr = String::from_utf8(output.stderr)?;
+            error!("Commit failed: {}", stderr);
             let err: Box<dyn Error> = stderr.into();
             return Err(err);
         }
 
+        info!("Commit created successfully");
         Ok(())
     }
 }
 
 /// Amends the last commit with the provided commit message.
 fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
+    info!("Amending last commit");
+    debug!("Commit message length: {} bytes", commit_msg.len());
+
     let mut child = Command::new("git")
         .args(["commit", "--amend", "-F", "-"])
         .stdin(Stdio::piped())
         .spawn()?;
 
+    trace!("Writing commit message to stdin for amend");
     if let Some(stdin) = child.stdin.as_mut() {
         stdin.write_all(commit_msg.as_bytes())?;
+    } else {
+        error!("Failed to open stdin for git amend");
+        return Err("Failed to open stdin for git amend".into());
     }
 
     let output = child.wait_with_output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
+        error!("Amend failed: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
+
+    info!("Commit amended successfully");
     Ok(())
 }
 
 /// Checks the AI's response for the 'check' command.
 fn check_commit(msg: &str) -> Result<(), Box<dyn Error>> {
+    debug!("Checking commit message for errors");
     if let Some(msg) = msg.strip_prefix("ERROR\n") {
+        error!("Error detected in commit message");
         eprintln!("{}", msg.trim());
         return Err("wrong commit message".into());
     }
+    debug!("Commit message passed validation check");
     println!("{}", &msg);
     Ok(())
 }
@@ -312,47 +392,87 @@ fn main() -> Result<(), Box<dyn Error>> {
         .write_style_or("LOG_STYLE", "always");
 
     env_logger::init_from_env(env);
+    info!("git-chronicler starting up");
+    debug!("Logging initialized");
 
     let opts = CliOpts::parse();
-
     debug!("Command line options parsed");
 
+    let model = opts.model.clone().unwrap_or_else(|| MODEL.to_string());
+    debug!("Using model: {}", model);
+    debug!("Using endpoint: {}", opts.endpoint);
+
     let (prompt, patch) = match opts.command {
-        SubCommand::Fixup => (inline_prompt(), get_last_commit()?),
-        SubCommand::Check => (check_prompt(), get_last_commit()?),
+        SubCommand::Fixup => {
+            info!("Running fixup command to improve existing commit message");
+            (inline_prompt(), get_last_commit()?)
+        }
+        SubCommand::Check => {
+            info!("Running check command to validate commit message");
+            (check_prompt(), get_last_commit()?)
+        }
         SubCommand::Write {
-            signoff: _,
+            signoff,
             cached,
-            interactive: _,
-        } => (write_prompt(), get_diff(cached)?),
+            interactive,
+        } => {
+            info!("Running write command to create new commit message");
+            debug!(
+                "Write options: signoff={}, cached={}, interactive={}",
+                signoff, cached, interactive
+            );
+            (write_prompt(), get_diff(cached)?)
+        }
     };
 
     let prompt = prompt.to_string();
+    debug!("Using prompt: {}", prompt);
 
     let system_prompts: Vec<String> = vec![patch.to_string()];
+    debug!("System prompt size: {} bytes", system_prompts[0].len());
 
     let tools = initialize_tools();
 
+    let max_tokens = opts.max_tokens.unwrap_or(MAX_TOKENS);
+    debug!("Max tokens: {}", max_tokens);
+
     let query_opts = Opts {
-        max_tokens: Some(opts.max_tokens.unwrap_or(MAX_TOKENS)),
-        model: opts.model.unwrap_or_else(|| MODEL.to_string()),
+        max_tokens: Some(max_tokens),
+        model: model,
         endpoint: opts.endpoint.clone(),
     };
 
-    let response = post_request(&prompt, Some(system_prompts), None, &tools, &query_opts)?;
+    info!("Sending request to AI service");
+    let response = match post_request(&prompt, Some(system_prompts), None, &tools, &query_opts) {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("AI request failed: {}", e);
+            return Err(e);
+        }
+    };
 
-    let msg: String = response
-        .choices
-        .ok_or("No responses received")?
-        .into_iter()
-        .map(|choice| choice.message.content)
-        .collect();
+    let msg: String = match response.choices {
+        Some(choices) if !choices.is_empty() => {
+            debug!("Received {} choices from AI", choices.len());
+            choices
+                .into_iter()
+                .map(|choice| choice.message.content)
+                .collect()
+        }
+        _ => {
+            error!("No responses received from AI service");
+            return Err("No responses received".into());
+        }
+    };
 
+    info!("AI response received, processing command");
     match opts.command {
         SubCommand::Fixup => {
+            debug!("Processing fixup command");
             amend_commit(&msg)?;
         }
         SubCommand::Check => {
+            debug!("Processing check command");
             check_commit(&msg)?;
         }
         SubCommand::Write {
@@ -360,9 +480,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             cached,
             interactive,
         } => {
+            debug!("Processing write command");
             write_commit(&msg, signoff, cached, interactive)?;
         }
     };
 
+    info!("Command completed successfully");
     Ok(())
 }

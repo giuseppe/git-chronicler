@@ -20,7 +20,8 @@
 use clap::{Parser, Subcommand};
 use codehawk::openai::{Opts, ToolCallback, ToolItem, ToolsCollection, post_request};
 use env_logger::Env;
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
+use regex::Regex;
 use serde::Deserialize;
 use std::error::Error;
 use std::io::Write;
@@ -60,20 +61,7 @@ fn check_prompt() -> String {
 /// This code is copied from codehawk for now
 fn tool_list_all_files(_params_str: &String) -> Result<String, Box<dyn Error>> {
     debug!("Executing list_all_files tool");
-    let mut cmd = Command::new("git");
-    cmd.arg("ls-files");
-    trace!("Running git command: {:?}", cmd);
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8(output.stderr)?;
-        error!("Failed to list files: {}", stderr);
-        let err: Box<dyn Error> = stderr.into();
-        return Err(err);
-    }
-    let r = String::from_utf8(output.stdout)?;
-    debug!("Successfully listed {} files", r.lines().count());
-    Ok(r)
+    run_git_command(vec!["ls-files"])
 }
 
 /// entrypoint for the read_file tool
@@ -84,29 +72,9 @@ fn tool_read_file(params_str: &String) -> Result<String, Box<dyn Error>> {
         path: String,
     }
 
-    let params: Params = match serde_json::from_str::<Params>(params_str) {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Failed to parse parameters for read_file: {}", e);
-            return Err(Box::new(e));
-        }
-    };
+    let params: Params = serde_json::from_str::<Params>(params_str)?;
 
-    debug!("Reading file: {}", params.path);
-    let mut cmd = Command::new("git");
-    cmd.arg("show").arg(format!("HEAD:{}", params.path));
-    trace!("Running git command: {:?}", cmd);
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8(output.stderr)?;
-        error!("Failed to read file {}: {}", params.path, stderr);
-        let err: Box<dyn Error> = stderr.into();
-        return Err(err);
-    }
-    let r = String::from_utf8(output.stdout)?;
-    debug!("Successfully read file {} ({} bytes)", params.path, r.len());
-    Ok(r)
+    run_git_command(vec!["show", "HEAD:{}", &params.path])
 }
 
 fn append_tool(tools: &mut ToolsCollection, name: String, callback: ToolCallback, schema: String) {
@@ -176,53 +144,69 @@ fn initialize_tools() -> ToolsCollection {
     tools
 }
 
-/// Retrieves the last commit log message and patch using `git log -p -1`.
-fn get_last_commit() -> Result<String, Box<dyn Error>> {
-    debug!("Retrieving last commit information");
+/// Run a git command and retrieve the stdout
+fn run_git_command(args: Vec<&str>) -> Result<String, Box<dyn Error>> {
+    debug!("Running git command {:?}", args);
+
     let mut input = Command::new("git");
-    input.arg("log").arg("-p").arg("-1");
-    trace!("Running git command: {:?}", input);
+    input.args(args);
 
     let output = input.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
-        error!("Failed to get last commit: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
     let r = String::from_utf8(output.stdout)?;
-    debug!("Successfully retrieved last commit ({} bytes)", r.len());
+    debug!("Successfully run command and got {:?}", r);
     Ok(r)
+}
+
+/// Get the last N git commit messages and strip any trailer information
+fn get_last_git_messages(n: u64) -> Result<Vec<String>, Box<dyn Error>> {
+    let n_arg = format!("-n{}", n);
+    let args: Vec<&str> = vec!["log", &n_arg, "--no-merges", "--pretty=format:%B%x00"];
+
+    let out = run_git_command(args)?;
+
+    let trailer_regex = Regex::new(r"^[A-Za-z0-9-]+:\s+.+$")?;
+
+    let messages = out
+        .split('\0')
+        .map(|msg| {
+            msg.lines()
+                .take_while(|line| !trailer_regex.is_match(line.trim()))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        })
+        .filter(|message| message.len() > 0)
+        .collect::<Vec<_>>();
+
+    Ok(messages)
+}
+
+/// Retrieves the last commit log message and patch using `git log -p -1`.
+fn get_last_commit() -> Result<String, Box<dyn Error>> {
+    run_git_command(vec!["log", "-p", "-1"])
 }
 
 /// Retrieves the diff of changes using `git diff`.
 fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
-    debug!("Retrieving diff with cached={}", cached);
-    let mut git_cmd = Command::new("git");
+    let mut args: Vec<&str> = vec!["diff", "-U50"];
 
-    let mut input = git_cmd.arg("diff").arg("-U50");
     if cached {
-        input = input.arg("--cached");
+        args.push("--cached");
         debug!("Using staged changes only");
     } else {
-        debug!("Using all changes (staged and unstaged)");
+        debug!("Using unstaged changes");
     }
 
-    trace!("Running git command: {:?}", input);
-    let output = input.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8(output.stderr)?;
-        error!("Failed to get diff: {}", stderr);
-        let err: Box<dyn Error> = stderr.into();
-        return Err(err);
-    }
-    let r = String::from_utf8(output.stdout)?;
-    debug!("Successfully retrieved diff ({} bytes)", r.len());
-
+    let r = run_git_command(args)?;
     if r.is_empty() {
         warn!("Empty diff returned - no changes detected");
     }
-
     Ok(r)
 }
 
@@ -265,7 +249,6 @@ fn write_commit(
         let status = child.wait()?;
 
         if !status.success() {
-            error!("Commit failed with status: {}", status);
             return Err("Commit command failed".into());
         }
 
@@ -285,14 +268,12 @@ fn write_commit(
             );
             stdin.write_all(commit_msg.as_bytes())?;
         } else {
-            error!("Failed to open stdin for git commit");
             return Err("Failed to open stdin for git commit".into());
         }
 
         let output = child.wait_with_output()?;
         if !output.status.success() {
             let stderr = String::from_utf8(output.stderr)?;
-            error!("Commit failed: {}", stderr);
             let err: Box<dyn Error> = stderr.into();
             return Err(err);
         }
@@ -316,7 +297,6 @@ fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
     if let Some(stdin) = child.stdin.as_mut() {
         stdin.write_all(commit_msg.as_bytes())?;
     } else {
-        error!("Failed to open stdin for git amend");
         return Err("Failed to open stdin for git amend".into());
     }
 
@@ -324,7 +304,6 @@ fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)?;
-        error!("Amend failed: {}", stderr);
         let err: Box<dyn Error> = stderr.into();
         return Err(err);
     }
@@ -337,7 +316,6 @@ fn amend_commit(commit_msg: &str) -> Result<(), Box<dyn Error>> {
 fn check_commit(msg: &str) -> Result<(), Box<dyn Error>> {
     debug!("Checking commit message for errors");
     if let Some(msg) = msg.strip_prefix("ERROR\n") {
-        error!("Error detected in commit message");
         eprintln!("{}", msg.trim());
         return Err("wrong commit message".into());
     }
@@ -392,7 +370,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .write_style_or("LOG_STYLE", "always");
 
     env_logger::init_from_env(env);
-    info!("git-chronicler starting up");
     debug!("Logging initialized");
 
     let opts = CliOpts::parse();
@@ -428,7 +405,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prompt = prompt.to_string();
     debug!("Using prompt: {}", prompt);
 
-    let system_prompts: Vec<String> = vec![patch.to_string()];
+    let last_git_messages = get_last_git_messages(100)?;
+    let last_git_messages_json = serde_json::to_string(&last_git_messages)?;
+    let git_history_prompt = format!(
+        "Follow the style of these git commit messages: {}",
+        last_git_messages_json
+    );
+
+    let system_prompts: Vec<String> = vec![patch.to_string(), git_history_prompt];
     debug!("System prompt size: {} bytes", system_prompts[0].len());
 
     let tools = initialize_tools();
@@ -446,7 +430,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let response = match post_request(&prompt, Some(system_prompts), None, &tools, &query_opts) {
         Ok(resp) => resp,
         Err(e) => {
-            error!("AI request failed: {}", e);
             return Err(e);
         }
     };
@@ -460,7 +443,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .collect()
         }
         _ => {
-            error!("No responses received from AI service");
             return Err("No responses received".into());
         }
     };

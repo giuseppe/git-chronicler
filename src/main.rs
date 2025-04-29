@@ -20,7 +20,7 @@
 use clap::{Parser, Subcommand};
 use codehawk::openai::{Opts, ToolCallback, ToolItem, ToolsCollection, post_request};
 use env_logger::Env;
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 use regex::Regex;
 use serde::Deserialize;
 use std::error::Error;
@@ -205,7 +205,7 @@ fn get_diff(cached: bool) -> Result<String, Box<dyn Error>> {
 
     let r = run_git_command(args)?;
     if r.is_empty() {
-        warn!("Empty diff returned - no changes detected");
+        return Err("Empty diff returned - no changes detected".into());
     }
     Ok(r)
 }

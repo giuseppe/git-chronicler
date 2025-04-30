@@ -18,7 +18,7 @@
  */
 
 use clap::{Parser, Subcommand};
-use codehawk::openai::{Opts, ToolCallback, ToolItem, ToolsCollection, post_request};
+use codehawk::openai::{post_request, Opts, ToolCallback, ToolItem, ToolsCollection};
 use env_logger::Env;
 use log::{debug, info, trace};
 use regex::Regex;
@@ -62,6 +62,17 @@ fn check_prompt() -> String {
 fn tool_list_all_files(_params_str: &String) -> Result<String, Box<dyn Error>> {
     debug!("Executing list_all_files tool");
     run_git_command(vec!["ls-files"])
+}
+
+/// Creates a prompt to ask for a summary of the current branch
+fn summary_prompt() -> String {
+    debug!("Creating summary prompt");
+
+    "Summarize the changes in the git commits, give more importance to the commit messages.\n \
+     It is used as the description for a pull request.\n\
+     Provide first a one-line descriptive title.\n\
+     \n"
+    .to_owned()
 }
 
 /// entrypoint for the read_file tool
@@ -185,6 +196,12 @@ fn get_last_git_messages(n: u64) -> Result<Vec<String>, Box<dyn Error>> {
         .collect::<Vec<_>>();
 
     Ok(messages)
+}
+
+/// Retrieves the changes in the current branch to prepare a summary
+fn get_branch_patches(base: &String) -> Result<String, Box<dyn Error>> {
+    let arg = format!("{}..HEAD", base);
+    run_git_command(vec!["log", "-p", &arg])
 }
 
 /// Retrieves the last commit log message and patch using `git log -p -1`.
@@ -360,6 +377,11 @@ enum SubCommand {
     Fixup,
     /// Check if the commit message describes correctly the patch
     Check,
+    /// Create a summary of the current branch
+    Summary {
+        /// Base branch
+        base: String,
+    },
 }
 
 /// Main entry point for the git-chronicler application.
@@ -399,6 +421,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 signoff, cached, interactive
             );
             (write_prompt(), get_diff(cached)?)
+        }
+        SubCommand::Summary { ref base } => {
+            info!("Running summary command");
+            debug!("Summary options: base={}", base);
+            (summary_prompt(), get_branch_patches(base)?)
         }
     };
 
@@ -464,6 +491,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => {
             debug!("Processing write command");
             write_commit(&msg, signoff, cached, interactive)?;
+        }
+        SubCommand::Summary { .. } => {
+            debug!("Processing summary command");
+            println!("{}", msg);
         }
     };
 

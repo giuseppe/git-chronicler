@@ -42,6 +42,18 @@ To replace the most recent commit message with an AI-improved version:
 git-chronicler fixup
 ```
 
+### Create a branch summary
+
+To generate a summary of the changes in your current branch for use in pull request descriptions:
+
+```
+git-chronicler summary --base <base_branch>
+```
+
+This command analyzes all changes between your current HEAD and the specified base branch, creating a comprehensive summary suitable for pull request descriptions. The output includes:
+- A one-line descriptive title suitable for the PR title
+- A detailed description of the changes, with emphasis on commit messages
+
 ### git rebase -i
 
 It is meant to be used interactively with `git rebase -i`.  To

@@ -10,7 +10,7 @@ serde_json = "1.0"
 dirs = "5.0"
 clap = { version = "~4.5.34", features = ["derive", "env"] }
 tempfile = "3.19.1"
-codehawk = { git = "https://github.com/giuseppe/codehawk.git", rev="2baa22a6f332347c5d9a327580682c13a52669ed" }
+codehawk = { git = "https://github.com/giuseppe/codehawk.git", rev="f02a0a1c9667b82ca1034e10ba6b8b3a56719aa8" }
 log = "0.4"
 env_logger = "0.11.8"
 regex = "1.11.1"

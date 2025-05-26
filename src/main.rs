@@ -18,7 +18,9 @@
  */
 
 use clap::{Parser, Subcommand};
-use codehawk::openai::{post_request, Opts, ToolCallback, ToolItem, ToolsCollection};
+use codehawk::openai::{
+    Message, Opts, ToolCallback, ToolItem, ToolsCollection, make_message, post_request,
+};
 use env_logger::Env;
 use log::{debug, info, trace};
 use regex::Regex;
@@ -454,7 +456,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     info!("Sending request to AI service");
-    let response = match post_request(&prompt, Some(system_prompts), None, &tools, &query_opts) {
+
+    let mut messages: Vec<Message> = vec![];
+    debug!("Using {} system prompts", system_prompts.len());
+    for sp in system_prompts {
+        messages.push(make_message("system", sp.clone()));
+    }
+    messages.push(make_message("user", prompt.clone()));
+
+    let response = match post_request(messages, &tools, &query_opts) {
         Ok(resp) => resp,
         Err(e) => {
             return Err(e);

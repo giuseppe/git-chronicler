@@ -452,6 +452,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let query_opts = Opts {
         max_tokens: Some(max_tokens),
         model: model,
+        tool_choice: Some("auto".to_string()),
         endpoint: opts.endpoint.clone(),
     };
 
@@ -471,13 +472,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let msg: String = match response.choices {
+    let mut msg: String = "".to_string();
+
+    match response.choices {
         Some(choices) if !choices.is_empty() => {
             debug!("Received {} choices from AI", choices.len());
-            choices
-                .into_iter()
-                .map(|choice| choice.message.content)
-                .collect()
+
+            if let Some(choice) = choices.first() {
+                if let Some(content) = &choice.message.content {
+                    msg = content.to_string();
+                }
+            }
         }
         _ => {
             return Err("No responses received".into());
